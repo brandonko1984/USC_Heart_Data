@@ -1,0 +1,278 @@
+---
+subtitle: 'Decision Trees, Bagging, Random Forest, and Gradient Boosting Machines'
+author: "Brandon Ko"
+date: "Nov 2015"
+output:
+  html_document:
+    highlight: tango
+    theme: spacelab
+---
+<!--
+comments must be put in an HTML comment form
+-->
+
+```{r set-options, echo=FALSE, cache=FALSE}
+options(width = 120)  # set output width, turn off scientific notation for big numbers
+```
+
+
+In this analysis, I will apply tree-based methods (Decision Trees, Bagging, Random Forest, and GBM) to the heart disease classification problem.
+
+### Data Preparation
+We will use the same **Heart** data, available at http://www-bcf.usc.edu/~gareth/ISL/Heart.csv.
+```{r}
+heart <- read.csv(file="http://www-bcf.usc.edu/~gareth/ISL/Heart.csv", row.names=1)
+summary(heart)
+```
+The task is to use the features to predict **AHD**, binary outcome related to some heart disease. 
+
+Some cleaning is necessary because there are NA's and also several categorical variables stored as numerical.
+```{r}
+# clean the NA's
+heart <- na.omit(heart)
+# convert to factors
+heart$Sex <- as.factor(heart$Sex)
+heart$Fbs <- as.factor(heart$Fbs)
+heart$RestECG <- as.factor(heart$RestECG)
+heart$ExAng <- as.factor(heart$ExAng)
+heart$Slope <- as.factor(heart$Slope)
+heart$Ca <- as.factor(heart$Ca)
+summary(heart)
+```
+
+Next, we will prepare the training and test dataset for later model comparison.
+```{r}
+# split training and test data 50/50
+N <- nrow(heart)
+set.seed(456)
+train.index <- sample(1:N, round(N/2))
+test.index <- - train.index
+```
+Let's separate the test data for GBM use.
+```{r}
+x.test <- heart[test.index, 1:13]
+y.test <- heart[test.index, 14]
+```
+
+
+### Decision Trees as a benchmark.
+Fit the optimal Decision Tree model using the training data (including growing, cross-validation tree size, and pruning), and use the model to predict the probability of AHD using the test data.
+
+```{r}
+library("tree")
+
+# grow a tree
+heart.tree <- tree(AHD ~ ., data=heart, subset=train.index)
+
+# pruning by cross-validation
+set.seed(123) #as it is a categorical outcome, in tree making we change the method to misclass
+heart.tree.cv <- cv.tree(heart.tree, method="misclass")
+
+# optimal tree size obtained by CV
+optimal <- which.min(heart.tree.cv$dev)
+optimal.size <- heart.tree.cv$size[optimal]
+
+# pruned tree
+heart.tree.pruned <- prune.tree(heart.tree, best=optimal.size, method="misclass")
+heart.tree.pruned
+plot(heart.tree.pruned)
+text(heart.tree.pruned, pretty=TRUE)
+
+# prediction on test data ##RK: while predicting for categorical data, output has 2 columns- 1st one p(No) & 2nd : prob (Yes)
+prob.tree <- predict(heart.tree.pruned, newdata=heart[test.index, ], type="vector")[, 2]
+
+# misclassification error in test data
+pred.tree <- predict(heart.tree.pruned, newdata=heart[test.index, ], type="class")
+table(pred.tree, y.test)
+```
+
+
+### Q1. Bagging.
+Fit a Bagging model with 501 trees on the training data, and predict the probability of AHD on the test data.
+
+**[REMARK]**: In binay classification, we often use an odd number of trees in order to break tie in the vote. 
+
+```{r}
+library("randomForest")
+heart.bag <- randomForest(AHD ~ ., data=heart, subset=train.index, mtry=13, ntree=501, na.action=na.fail)
+
+heart.bag
+plot(heart.bag)
+
+# predict
+yhat.bag <- predict(heart.bag, newdata=x.test, type="prob")
+```
+
+
+### Q2. Random Forest.
+a. Fit a Random Forest model with 501 trees on the training data (remember to optimize **mtry**), and predict the probability of AHD on the test data. 
+
+
+```{r}
+library("randomForest")
+tuneRF(x=heart[train.index, -14], y=heart[train.index, 14], mtryStart=2, ntreeTry=501, stepFactor=1.5)
+
+#as tuneRF is giving very unstable output, we further tried to tune manually. 
+#tuning manually 
+
+# evaluating optimal number of predictors *mtry*
+miscal.rfs <- rep(0, 13)
+for(m in 1:13) {
+    set.seed(12)
+    rf <- randomForest(AHD ~ ., data=heart, subset=train.index, mtry=m, ntree=501, importance=TRUE)
+    miscal.rfs[m] <- rf$err.rate[m,"OOB"]
+  }
+  
+plot(1:13, miscal.rfs, type="b", xlab="mtry", ylab="OOB Error")
+
+optm.rf<- which.min(miscal.rfs)
+
+#optimal model
+heart.rf<- randomForest(AHD ~ ., data=heart, subset=train.index, mtry=optm.rf, ntree=501, importance=TRUE)
+
+#predicting for the test data
+yhat.RF <- predict(heart.rf, newdata=x.test, type="prob")
+```
+
+b. Plot the variable importance and find out how having AHD is related to variables "MaxHR" and "Thal." Briefly interpret the plots.
+
+```{r}
+importance(heart.rf)
+varImpPlot(heart.rf)
+par(mfrow=c(1,2))
+partialPlot(heart.rf, heart[train.index, ], x.var="MaxHR", which.class = "Yes")
+partialPlot(heart.rf, heart[train.index, ], x.var="Thal",which.class = "Yes")
+par(mfrow=c(1,1))
+```
+For MaxHR, the values greater than 140 have highler influence on accurately predicting the classification.
+
+'Fixed' Thal has about 10% chance of accurately predicting negative classification.
+'Normal' Thal has 60% chance of accurately predicting positive classification.
+'Reversable' that has 80% chance of predicting negative classification
+
+### Q3. Gradient Boosting Machines.
+a. Fit a GBM model on the training data, try your best to find the optimal **n.trees**, **shrinkage**, and **interaction.depth** using cross-validtion, and predict the probability of AHD on the test data.
+
+```{r}
+#GBM Model
+library("gbm")
+set.seed(123)
+
+heart1 <- heart
+heart1$AHD1 <- ifelse(heart1$AHD =="Yes",1,0)
+heart1$AHD1 <- as.numeric(heart1$AHD1)
+heart1$AHD <- NULL
+ygbm.test <- heart[test.index, 15]
+summary(heart1)
+
+
+heart.gbm <- gbm(AHD1~ .,data=heart1[train.index, ],distribution="bernoulli", n.trees=5000, interaction.depth=4,shrinkage = 0.0001)
+
+gbm.perf(heart.gbm)
+
+# predict
+heart.gbm.predict <- predict(heart.gbm,newdata=heart1[test.index, ],n.trees=5000,type="response")
+
+# inspect a particular tree
+pretty.gbm.tree(heart.gbm, i.tree=2)
+
+# Optimal GBM model: tune gbm by CV 
+
+#Note to Professor Tong: This is the code to tune the GBM, however as it is taking long time to execute so it has been commented while generating the html file
+
+# n.step <- 50
+# ds <- c(1, 2, 4, 6, 8)
+# lambdas <- c(0.01, 0.005, 0.001, 0.0005)
+# d.size <- length(ds)
+# l.size <- length(lambdas)
+# 
+# tune.out <- data.frame()
+# for (i in 1:d.size) {
+#     for (j in 1:l.size) {
+#         d <- ds[i]
+#         lambda <- lambdas[j]
+#         for (n in (1:10) * n.step / (lambda * sqrt(d))) {
+#             set.seed(321)
+#             gbm.mod <- gbm(AHDNew ~ ., data=heart[train.index, ], distribution="bernoulli", n.trees=n, interaction.depth=d, shrinkage=lambda, cv.folds=10)
+#             n.opt <- gbm.perf(gbm.mod, method="cv")
+#             cat("n =", n, " n.opt =", n.opt, "\n")
+#             if (n.opt / n < 0.95) break
+#         }
+#         cv.err <- gbm.mod$cv.error[n.opt]
+#         pred <- predict(gbm.mod, newdata=heart[test.index,], n.trees=n.opt)
+#         pred2 <- as.integer(ifelse(pred > 0.5, 1, 0))
+#         test.err <- sum(pred2!=ygbm.test)/length(ygbm.test) 
+#         out <- data.frame(d=d, lambda=lambda, n=n, n.opt=n.opt, cv.err=cv.err, test.err=test.err)
+#         print(out)
+#         tune.out <- rbind(tune.out, out)
+#     }
+# }
+
+# Tuning Params 
+
+#  d lambda    n      n.opt    cv.err 
+#  5  0.001 22360.68  4117   0.754706  
+
+#Optimal GBM model
+set.seed(321)
+heart.gbm3 <- gbm(AHD1 ~ ., data=heart1[train.index, ], distribution="bernoulli", n.trees=22361, interaction.depth=5, shrinkage=0.001)
+heart.gbm3
+summary(heart.gbm3)
+
+heart.gbm.predict3 <- predict(heart.gbm3, newdata=heart[test.index, ], n.trees=22361,type="response")
+```
+
+
+
+b. Plot the variable importance, find out the partial dependency on variables "MaxHR", "Thal", and the two variables "Age" and "Chol" jointly. Briefly interpret the plots.
+
+```{r}
+summary(heart.gbm3)
+
+# partial plot in gbm
+plot(heart.gbm3, na.rm=TRUE, i="MaxHR")
+plot(heart.gbm3, i="Thal")
+plot(heart.gbm3, i=c("Age", "Chol"))
+```
+For Max HR, the values have a constant influence in predicting classification as compared to previous model. For MaxHR, the values greater than 140 have highler influence on accurately predicting the classification.
+For Thal, the values none of the categories seem to have influence in predicting classification
+For age and col, if age is above 65 and cholestrol above 300 then it has a higher influence on accurately predicting the classification. For Age < 65 and cholestrol less than 200 have a smaller influence on correctly predicting the classification
+
+
+### Q4. Compare the above-studied model predictions in terms of misclassification rate and AUC.
+```{r}
+library("ROCR")
+
+# Misclassification Rate
+
+tree.pred <- prediction(prob.tree,y.test)
+bagging.pred <- prediction(yhat.bag[,2],y.test) 
+rf.pred <- prediction(yhat.RF[,2],y.test)
+gbm.pred <- prediction(heart.gbm.predict,y.test)
+gbm.pred.tune <- prediction(heart.gbm.predict3,y.test)
+
+
+tree.err <- performance(tree.pred,measure="err")
+bagging.err <- performance(bagging.pred, measure="err")
+rf.err <- performance(rf.pred, measure="err")
+gbm.err <- performance(gbm.pred, measure="err")
+gbm.err.tune <- performance(gbm.pred.tune, measure="err")
+
+plot(tree.err,,ylim=c(0.05,0.6))
+plot(bagging.err,col='tomato2',add=T)
+plot(rf.err, col='slateblue',add=T)
+plot(gbm.err, col='slateblue',add=T)
+plot(gbm.err.tune, col='pink',add=T)
+
+
+# AUC 
+
+as.numeric(performance(tree.pred, "auc")@y.values)
+as.numeric(performance(bagging.pred, "auc")@y.values)
+as.numeric(performance(rf.pred, "auc")@y.values)
+as.numeric(performance(gbm.pred, "auc")@y.values)
+as.numeric(performance(gbm.pred.tune, "auc")@y.values)
+```
+
+
+### Q5. [OPTIONAL] Try to mix the predictions we have here and we had from Assignment 4 and construct an ensemble prediction that performs better.
