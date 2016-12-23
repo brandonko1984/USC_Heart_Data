@@ -1,0 +1,187 @@
+---
+title: "DSC5103 Assignment 4"
+subtitle: 'Regularization Methods in Classification'
+author: "Tong Wang"
+date: "Oct 2015"
+output:
+  html_document:
+    highlight: tango
+    theme: spacelab
+---
+<!--
+comments must be put in an HTML comment form
+-->
+
+```{r set-options, echo=FALSE, cache=FALSE}
+options(width = 120)  # set output width, turn off scientific notation for big numbers
+```
+
+
+In this assignment, we will apply regularization methods (Ridge Regression, LASSO, and Elastic Net) to a classification problem, and compare them with traditional Logistic Regression. 
+
+### Data Preparation
+First, let us get the data. We will use the **Heart** data from the textbook, available at http://www-bcf.usc.edu/~gareth/ISL/Heart.csv.
+```{r}
+heart <- read.csv(file="http://www-bcf.usc.edu/~gareth/ISL/Heart.csv", row.names=1)
+summary(heart)
+```
+The task is to use the features to predict **AHD**, binary outcome related to some heart disease. 
+
+Some cleaning is necessary because there are NA's and also several categorical variables stored as numerical.
+```{r}
+# clean the NA's
+heart <- na.omit(heart)
+# convert to factors
+heart$Sex <- as.factor(heart$Sex)
+heart$Fbs <- as.factor(heart$Fbs)
+heart$RestECG <- as.factor(heart$RestECG)
+heart$ExAng <- as.factor(heart$ExAng)
+heart$Slope <- as.factor(heart$Slope)
+heart$Ca <- as.factor(heart$Ca)
+summary(heart)
+```
+
+Next, we will prepare the training and test dataset for later model comparison.
+```{r}
+# split training and test data 50/50
+N <- nrow(heart)
+set.seed(456) 
+train.index <- sample(1:N, round(N/2)) 
+test.index <- - train.index
+```
+Because function **glmnet()** only takes data in matrix form, we need a copy of the training and test data in matrix form.
+```{r}
+# construct x and y matrix for glmnet()
+x <- model.matrix(AHD ~ ., heart[train.index, ])[,-1]
+y <- heart[train.index, "AHD"]
+x.test <- model.matrix(AHD ~ ., heart[-train.index, ])[,-1]
+y.test <- heart[-train.index, "AHD"]
+```
+
+
+### Q1. Logistic Regression as a benchmark.
+Find the optimal Logistic Regression model with **stepAIC()** using the training data, and use the model to predict using the test data.
+
+```{r}
+library("MASS")
+glm.fit<-glm(AHD~., family=binomial(), data=heart[train.index,])
+reg.model<- stepAIC(glm.fit, direction="both")
+AHD.Pred<-predict(reg.model, newdata = data.frame(heart[-train.index,-14 ]),type="response")
+test<- heart[-train.index,]
+
+```
+
+### Q2. Ridge Regression.
+Fit a Ridge Regression model on the training data, use cross-validtion to find the optimal $\lambda$, and use the optimal model to predict on the test data.
+
+```{r}
+library("glmnet")
+ridge.mod <- glmnet(x, y, family="binomial",alpha=0)
+plot(ridge.mod, xvar="lambda", label=TRUE)
+
+#CV to find the optimal lambda
+set.seed(999)
+ridge.cv <- cv.glmnet(x, y, alpha=0, family="binomial")
+
+# optimal lambda
+ridge.lam <- ridge.cv$lambda.min
+
+#Using optimal model to predict on the test data
+AHDpredR<- predict(ridge.cv, type="response", s="lambda.min",newx = x.test )
+AHDpredR.test<- ifelse(AHDpredR >0.5, "YES", "NO")
+```
+
+### Q3. LASSO.
+Fit a LASSO model on the training data, use cross-validtion to find the optimal $\lambda$, and use the optimal model to predict on the test data.
+```{r}
+lasso.mod <- glmnet(x, y, family="binomial",alpha=1)
+plot(lasso.mod, xvar="lambda", label=TRUE)
+
+#CV to find the optimal lambda
+set.seed(999)
+lasso.cv <- cv.glmnet(x, y, alpha=1, family="binomial")
+
+# optimal lambda
+lasso.lam <- lasso.cv$lambda.min
+
+#Using optimal model to predict on the test data
+AHDpredL<- predict(lasso.cv, type="response", s=lasso.lam,newx = x.test )
+AHDpredL.test<- ifelse(AHDpredL >0.5, "YES", "NO")
+```
+
+### Q4. Elastic Net.
+Fit an Elastic Net model on the training data, use cross-validtion to find the optimal $\alpha$ and $\lambda$, and use the optimal model to predict on the test data.
+
+```{r}
+
+elasnet.mod <- glmnet(x, y, family="binomial",alpha=0.5)
+plot(elasnet.mod, xvar="lambda", label=TRUE)
+alpha <- seq(0,1,0.01)
+folds <- sample(1:10, size=length(y), replace=TRUE)
+
+#CV to find the optimal lambda & alpha
+set.seed(999)
+elasnet.cvm<- data.frame(alpha=alpha, cvmin=0)
+for (k in alpha) {
+  elasnet.cv <- cv.glmnet(x, y, alpha=k, foldid=folds, family="binomial")
+  elasnet.cvm[elasnet.cvm$alpha==k,"cvmin"]<- min(elasnet.cv$cvm)
+}
+
+#optimal alpha
+opt.alpha<-  elasnet.cvm$alpha[elasnet.cvm$cvmin == min(elasnet.cvm$cvmin)]
+
+#optimal model
+elasnet.optcv <- cv.glmnet(x, y, alpha=opt.alpha, family="binomial")
+
+# optimal lambda
+elasnet.lam <- elasnet.optcv$lambda.min
+
+#prediction from the optimal model
+AHDpredE<- predict(elasnet.optcv, type="response", s=elasnet.lam,newx = x.test )
+AHDpredE.test<- ifelse(AHDpredE >0.5, "YES", "NO")
+```
+
+### Q5. Compare the above-studied model predictions in terms of misclassification rate, ROC, and AUC.
+
+```{r}
+library("ROCR")
+logistic.pred<- prediction(AHD.Pred, y.test)
+ridge.pred <- prediction(AHDpredR, y.test)
+lasso.pred <- prediction(AHDpredL, y.test)
+elasnet.pred <- prediction(AHDpredE, y.test)
+
+
+# misclassification rate
+logistic.err <- performance(logistic.pred, measure = "err")
+ridge.err <- performance(ridge.pred, measure = "err")
+lasso.err <- performance(lasso.pred, measure = "err")
+elasnet.err <- performance(elasnet.pred, measure = "err")
+
+plot(logistic.err, lwd=2, col="black", ylim=c(0.1, 0.5))
+plot(ridge.err, lwd=2, add=TRUE, col="red")
+plot(lasso.err, lwd=2, add=TRUE, col="blue")
+plot(elasnet.err, lwd=2, add=TRUE, col="green")
+
+
+# ROC plot
+logistic.ROC <- performance(logistic.pred, measure = "tpr", x.measure = "fpr")
+ridge.ROC <- performance(ridge.pred, measure = "tpr", x.measure = "fpr")
+lasso.ROC <- performance(lasso.pred, measure = "tpr", x.measure = "fpr")
+elasnet.ROC <- performance(elasnet.pred, measure = "tpr", x.measure = "fpr")
+
+plot(logistic.ROC, lwd=2, col="black")
+plot(ridge.ROC, lwd=2, add=TRUE, col="red")
+plot(lasso.ROC, lwd=2, add=TRUE, col="blue")
+plot(elasnet.ROC, add=TRUE, col="green")
+abline(a=0, b=1, lty=2) # diagonal line
+
+
+# AUC
+logistic.AUC <- as.numeric(performance(logistic.pred, "auc")@y.values)
+ridge.AUC <- as.numeric(performance(ridge.pred, "auc")@y.values)
+lasso.AUC <- as.numeric(performance(lasso.pred, "auc")@y.values)
+elasnet.AUC <- as.numeric(performance(elasnet.pred, "auc")@y.values)
+modelAUC<- data.frame(model.type=c("Logistic","Ridge", "Lasso", "Elasnet"), AUC=c(logistic.AUC, ridge.AUC, lasso.AUC, elasnet.AUC))
+best.model<- modelAUC[modelAUC$AUC==max(modelAUC$AUC),]
+best.model
+```
