@@ -1,7 +1,6 @@
 ---
-title: "DSC5103 Assignment 4"
-subtitle: 'Regularization Methods in Classification'
-author: "Tong Wang"
+Title: 'Regularization Methods in Classification'
+author: Brandon Ko
 date: "Oct 2015"
 output:
   html_document:
@@ -17,7 +16,7 @@ options(width = 120)  # set output width, turn off scientific notation for big n
 ```
 
 
-In this assignment, we will apply regularization methods (Ridge Regression, LASSO, and Elastic Net) to a classification problem, and compare them with traditional Logistic Regression. 
+In this analysis, I will apply regularization methods (Ridge Regression, LASSO, and Elastic Net) to a classification problem, and compare them with traditional Logistic Regression. 
 
 ### Data Preparation
 First, let us get the data. We will use the **Heart** data from the textbook, available at http://www-bcf.usc.edu/~gareth/ISL/Heart.csv.
